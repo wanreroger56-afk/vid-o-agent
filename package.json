@@ -1,0 +1,12 @@
+{
+  "name": "video-agent-whatsapp",
+  "version": "1.0.0",
+  "description": "Agent IA WhatsApp - Createur de videos publicitaires",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
