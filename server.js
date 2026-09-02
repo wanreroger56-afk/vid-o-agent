@@ -1,4 +1,8 @@
 const express = require('express');
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const app = express();
 app.use(express.json());
 
@@ -6,7 +10,6 @@ const PORT = process.env.PORT || 3000;
 const GREEN_API_INSTANCE = process.env.GREEN_API_INSTANCE;
 const GREEN_API_TOKEN = process.env.GREEN_API_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY;
 
 const ALLOWED_NUMBERS = (process.env.ALLOWED_NUMBERS || '').split(',').map(n => n.trim()).filter(Boolean);
 const GREEN_API_URL = `https://7107.api.greenapi.com/waInstance${GREEN_API_INSTANCE}`;
@@ -35,7 +38,7 @@ async function sendVideo(chatId, videoUrl, caption) {
 // ═══════════════════════════════════════════════════════════
 
 async function directeurIA(message, hasImage) {
-  console.log('[1/4] DIRECTEUR IA — Analyse stratégique...');
+  console.log('[1/6] DIRECTEUR IA — Analyse stratégique...');
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -51,7 +54,7 @@ async function directeurIA(message, hasImage) {
           content: `Tu es un DIRECTEUR MARKETING senior, expert du marché BURKINA FASO et AFRIQUE DE L'OUEST.
 
 Tu analyses le message du client et identifies :
-- Le produit/service exact
+- Le produit/service exact (DESCRIPTION VISUELLE DÉTAILLÉE : forme, couleur, taille, matériaux, emballage)
 - Le marché cible (jeunes, femmes, professionnels, etc.)
 - Les bénéfices clés à mettre en avant
 - Le ton à utiliser (luxe, populaire, urgent, inspirant)
@@ -59,18 +62,19 @@ Tu analyses le message du client et identifies :
 
 Réponds UNIQUEMENT en JSON :
 {
-  "produit": "description précise du produit/service",
+  "produit": "description VISUELLE précise du produit (forme, couleurs, matériaux, taille, emballage)",
   "marche_cible": "qui sont les clients idéaux au Burkina",
   "benefices_cles": ["bénéfice 1", "bénéfice 2", "bénéfice 3"],
   "ton": "luxe | populaire | urgent | inspirant",
   "strategie": "approche pub recommandée en 1 phrase",
-  "mots_cles_locaux": ["mots/expressions qui parlent aux Burkinabè"]
+  "mots_cles_locaux": ["mots/expressions qui parlent aux Burkinabè"],
+  "presenter_genre": "femme ou homme — le plus adapté au produit et à la cible"
 }`
         },
         { role: 'user', content: message }
       ],
       temperature: 0.7,
-      max_tokens: 400,
+      max_tokens: 500,
       response_format: { type: 'json_object' }
     })
   });
@@ -80,17 +84,84 @@ Réponds UNIQUEMENT en JSON :
   const analyse = JSON.parse(data.choices[0].message.content);
   console.log('  Produit:', analyse.produit);
   console.log('  Cible:', analyse.marche_cible);
-  console.log('  Ton:', analyse.ton);
+  console.log('  Présentateur:', analyse.presenter_genre);
   return analyse;
 }
 
 // ═══════════════════════════════════════════════════════════
-// AGENT 2 : SCÉNARISTE IA (OpenAI GPT)
-// Script 5 scènes — narration française pour avatar HeyGen
+// AGENT VISION : Analyse l'image produit du client
+// Extrait une description ULTRA-PRÉCISE pour que Sora
+// reproduise le MÊME produit (forme, couleur, matériaux)
 // ═══════════════════════════════════════════════════════════
 
-async function scenaristeIA(analyse, hasImage) {
-  console.log('[2/4] SCÉNARISTE IA — Script HeyGen 5 scènes...');
+async function visionIA(imageUrl) {
+  console.log('[VISION] Analyse photo produit du client...');
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a product photography analyst. Describe the product in the image with EXTREME VISUAL PRECISION in English.
+
+Include ALL of these details:
+- EXACT SHAPE: round, square, rectangular, curved, tapered, etc.
+- EXACT COLORS: use specific color names (amber, champagne gold, matte black, pearl white, deep burgundy...)
+- MATERIALS: glass, plastic, metal, fabric, leather, cardboard, etc.
+- TEXTURES: smooth, frosted, matte, glossy, textured, embossed, engraved
+- SIZE PROPORTIONS: tall/short, wide/narrow, thick/thin relative to a hand
+- CAP/LID: shape, color, material of the cap or closure
+- LABEL/DECORATION: any patterns, engravings, ornaments, gold accents, arabesque designs
+- PACKAGING: box design if visible
+
+DO NOT mention any brand name, logo text, or trademark.
+Replace brand names with descriptive terms (e.g. "ornate gold calligraphy" instead of "Lattafa logo").
+
+Write 100-150 words. Be so precise that an AI video generator can recreate this EXACT product without seeing the image.`
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Describe this product with extreme visual precision so an AI video generator can reproduce it identically.' },
+              { type: 'image_url', image_url: { url: imageUrl } }
+            ]
+          }
+        ],
+        max_tokens: 400
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      console.error('  Vision error:', data.error?.message || res.status);
+      return null;
+    }
+
+    const description = data.choices[0].message.content;
+    console.log('  PRODUIT IDENTIFIÉ:', description.substring(0, 200) + '...');
+    return description;
+  } catch (err) {
+    console.error('  Vision error:', err.message);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// AGENT 2 : SCÉNARISTE IA (OpenAI GPT)
+// Script AIDA 3 scènes — prompts Sora + narration TTS
+// ═══════════════════════════════════════════════════════════
+
+async function scenaristeIA(analyse) {
+  console.log('[2/6] SCÉNARISTE IA — Script AIDA 3 scènes...');
+
+  const genre = analyse.presenter_genre || 'femme';
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -103,106 +174,96 @@ async function scenaristeIA(analyse, hasImage) {
       messages: [
         {
           role: 'system',
-          content: `Tu es un GÉNIE DE LA PUBLICITÉ. Pas un simple rédacteur — un CERVEAU CRÉATIF de niveau mondial.
-Tu penses comme David Ogilvy, tu provoques comme TBWA, tu émeus comme les meilleures pubs Apple.
+          content: `Tu es un GÉNIE DE LA PUBLICITÉ et un RÉALISATEUR DE CLIPS COMMERCIAUX.
+Tu penses comme David Ogilvy, tu filmes comme les pubs Dior, Chanel, Nike.
 
-TON UNIQUE OBJECTIF : créer des vidéos qui BLOQUENT LE SCROLL sur TikTok, Instagram, Facebook.
-
-Tu as ZÉRO contrainte technique. Aucune limite de durée par scène.
-Tu es LIBRE de créer le spot parfait. Le seul juge, c'est le résultat : est-ce que ça VEND ?
+TON OBJECTIF : créer une PUB VIDÉO PROFESSIONNELLE qui BLOQUE LE SCROLL.
+PAS une personne assise qui parle. Une VRAIE PUB : le/la présentateur(trice) TIENT le produit, le MONTRE, l'UTILISE, le PRÉSENTE comme dans une pub TV.
 
 Voici l'analyse stratégique du Directeur Marketing :
 ${JSON.stringify(analyse, null, 2)}
 
+=== LE PRÉSENTATEUR ===
+Genre : ${genre}
+${genre === 'femme' ? 'Beautiful elegant African woman' : 'Handsome confident African man'}
+Le/la présentateur(trice) INTERAGIT avec le produit : tient, montre, utilise, présente, manipule.
+
 === TON ARSENAL DE SCROLL-STOPPERS ===
+- Pattern Interrupt, Curiosity Gap, Bold Claim, Interpellation directe
+- FOMO, Preuve sociale, Contraste avant/après, Storytelling sensoriel
 
-TECHNIQUES DE HOOK (les 3 premières secondes décident de TOUT) :
-- Pattern Interrupt : dire quelque chose de tellement inattendu que le cerveau DOIT écouter
-- Curiosity Gap : ouvrir une boucle que le spectateur DOIT fermer ("Tu sais pourquoi les femmes de Ouaga...")
-- Bold Claim : affirmation tellement audacieuse qu'on ne peut pas ignorer
-- Confession : "Je vais te dire un secret que personne ne te dit..."
-- Interpellation directe : "Toi là, oui toi qui scroll..." / "Arrête tout!"
-- Social Proof choc : "Tout Ouaga en parle et toi tu ne sais même pas..."
+EXPRESSIONS BURKINA :
+"Wakat la!", "Ça va te plaire dèh!", "Tu vas briller!", "Faut pas dormir dessus!", "Tes copines vont être jalouses!"
 
-TECHNIQUES DE PERSUASION (psychologie de vente) :
-- FOMO : peur de rater quelque chose ("Tes voisines ont déjà commandé")
-- Preuve sociale : "Les femmes les plus élégantes du Burkina le savent"
-- Réciprocité : donner un conseil gratuit avant de vendre
-- Contraste : montrer l'avant/après, le problème/solution
-- Storytelling : raconter une micro-histoire en 1 scène
-- Sensoriel : faire SENTIR, TOUCHER, VOIR le produit par les mots
+=== MÉTHODE AIDA — 3 SCÈNES — 15-30 SECONDES ===
+Chaque scène = 8 secondes de vidéo Sora.
+Total : 24 secondes. Format parfait pour TikTok/Instagram/Facebook.
 
-EXPRESSIONS BURKINA FASO QUI TUENT :
-"Wakat la!", "C'est toi-même qui va voir!", "Ça va te plaire dèh!", "Les gens vont te demander c'est quoi!", "Tu vas briller!", "Faut pas dormir dessus!", "C'est du vrai de vrai!", "Made in qualité!", "Tes copines vont être jalouses!"
+🅰️ SCÈNE 1 — ATTENTION (8 secondes)
+OUVERTURE CINÉMATIQUE. Le produit apparaît de manière spectaculaire.
+Le/la présentateur(trice) PREND le produit, le RÉVÈLE au spectateur.
+Ex parfum : "mains élégantes qui saisissent le flacon, le soulèvent vers la lumière"
+Ex vêtement : "la personne apparaît en portant le vêtement, marche vers la caméra"
+Ex cosmétique : "la personne ouvre le produit, révèle la texture, commence à l'appliquer"
 
-${hasImage ? 'Le client a fourni une photo du produit. NE génère PAS de image_prompt.' : ''}
+🔥 SCÈNE 2 — DÉSIR (8 secondes)
+Le/la présentateur(trice) UTILISE le produit. CETTE SCÈNE DOIT BLOQUER LE SCROLL.
+Ex parfum : "she gracefully sprays the fragrance mist into the golden air, the mist catches the light, she smiles with confidence and satisfaction"
+Ex vêtement : "he/she walks confidently wearing the outfit, fabric flows in cinematic slow motion, turns to show the back"
+Ex cosmétique : "she presents the product close to camera, shows the rich texture, her skin glows radiantly"
+MONTRER la transformation, le plaisir, le désir. Rendre le spectateur JALOUX.
 
-=== MÉTHODE AIDA — LA LOI SACRÉE DE LA PUB ===
-Chaque spot DOIT suivre AIDA. C'est non-négociable. C'est la science de la vente.
-Aucune limite de durée par scène. Vise 25-40 mots par scène. Total : 50-90 secondes.
+💥 SCÈNE 3 — ACTION (8 secondes)
+Plan final MÉMORABLE. Le/la présentateur(trice) PRÉSENTE le produit face caméra.
+Pose confiante et puissante, produit bien visible, regard caméra direct.
+Ex : "she holds the product toward camera with pride, powerful confident smile, dramatic slow zoom on the product, golden particles in the air"
 
-🅰️ ATTENTION (Scène 1) — STOPPER LE SCROLL
-Les 3 premières secondes décident de TOUT. Si tu perds le spectateur ici, c'est fini.
-Hook IMPOSSIBLE à ignorer. Pattern interrupt + curiosité + choc.
-L'avatar regarde le spectateur droit dans les yeux et le FIGE sur place.
-Techniques : question provocante, affirmation choc, secret révélé, interpellation directe.
+=== STYLE D'ÉCRITURE DES video_motion (TRÈS IMPORTANT) ===
+Les prompts sont envoyés à un générateur vidéo IA. Utilise un style de BRIEF DE RÉALISATION PUBLICITAIRE professionnel :
+- Décris comme un directeur artistique de Dior ou Nike décrirait un storyboard
+- Utilise des termes de cinéma : "slow motion", "shallow depth of field", "golden hour lighting", "cinematic dolly shot"
+- Pour les interactions produit : "gracefully presents", "elegantly reveals", "confidently displays", "showcases the product"
+- Pour les parfums : "sprays fragrance mist into the air" (dans l'air, PAS sur la peau)
+- Le/la présentateur(trice) est toujours HABILLÉ(E) élégamment
 
-ℹ️ INTÉRÊT (Scènes 2-3) — CAPTIVER ET FASCINER
-Maintenant que le spectateur est accroché, il faut le GARDER.
+=== FORMAT DE CHAQUE video_motion (EN ANGLAIS, 50+ MOTS) ===
+Chaque prompt Sora DOIT contenir :
+1. LE/LA PRÉSENTATEUR(TRICE) : ${genre === 'femme' ? 'beautiful elegant African woman in stunning designer dress' : 'handsome confident African man in sharp designer suit'}, expression, attitude
+2. LE PRODUIT EXACT : décris PRÉCISÉMENT forme, couleur, taille, matériaux, emballage (d'après l'analyse)
+3. L'INTERACTION CAPTIVANTE : ce que la personne FAIT avec le produit de manière spectaculaire
+4. LA CINÉMATIQUE : mouvement caméra, éclairage dramatique, ralenti, profondeur de champ, style pub luxe internationale
 
-Scène 2 — INTÉRÊT : LA DÉCOUVERTE
-Présente le produit comme une RÉVÉLATION. Fais monter la curiosité.
-L'avatar est passionné, ses mots font VOIR et SENTIR le produit.
-Détails sensoriels : textures, parfums, couleurs, sensations tactiles.
-Le spectateur doit se dire "attends, c'est quoi ce truc ?"
-
-Scène 3 — INTÉRÊT : LE PROBLÈME/SOLUTION
-Montre le problème que le spectateur VIT (frustration, manque, besoin).
-Puis révèle comment ce produit RÉSOUT ce problème parfaitement.
-Contraste saisissant : la vie SANS vs la vie AVEC.
-Le spectateur se reconnaît et pense "c'est exactement ce qu'il me faut".
-
-🔥 DÉSIR (Scène 4) — RENDRE LE PRODUIT IRRÉSISTIBLE
-Le spectateur est intéressé, maintenant il doit le VOULOIR à tout prix.
-Joue sur : le statut social, la fierté, l'appartenance, la jalousie positive.
-"Les gens vont te demander...", "Tu vas être celle/celui que tout le monde regarde..."
-Preuve sociale + lifestyle aspirationnel + émotions profondes.
-L'avatar crée une vision où le spectateur SE VOIT déjà avec ce produit.
-
-💥 ACTION (Scène 5) — POUSSER À AGIR MAINTENANT
-Le désir est là, mais sans action il n'y a PAS de vente.
-FOMO maximum : urgence réelle, stock limité, offre qui expire, exclusivité.
-Pas juste "commande maintenant" — donne une RAISON CONCRÈTE d'agir MAINTENANT.
-L'avatar donne le moyen précis de commander (WhatsApp, lien, téléphone).
-Dernière phrase = la plus mémorable de tout le spot.
-
-=== RÈGLES D'OR ===
-- Chaque narration : 25-40 mots EN FRANÇAIS, ton ORAL naturel
-- Tu parles comme un ami charismatique, pas comme un robot
-- Utilise le TU — on s'adresse à UNE personne
-- Chaque mot doit MÉRITER sa place — pas de remplissage
-- Expressions locales burkinabè = authenticité = confiance
-- Le texte doit donner envie de RÉÉCOUTER la pub
-- Tu es le cerveau — RÉFLÉCHIS, ne fais pas du générique
+=== NARRATION (EN FRANÇAIS, pour voix off TTS) ===
+Chaque scène a aussi une narration française (voix off par dessus la vidéo).
+La voix off accompagne l'image. Court et percutant.
 
 Réponds UNIQUEMENT en JSON :
 {
-  "hook": "PHRASE CHOC max 8 mots MAJUSCULES — le scroll-stopper",
+  "hook": "PHRASE CHOC max 8 mots MAJUSCULES",
   "titre": "Nom produit max 5 mots",
   "benefice": "Bénéfice irrésistible max 10 mots",
   "cta": "Action urgente max 6 mots",
-  "angle": "L'angle marketing choisi en 1 phrase (ex: FOMO, exclusivité, transformation...)",
-  "image_prompt": "EN ANGLAIS: prompt DALL-E pour photo produit publicitaire premium, vertical 9:16, no text no logo, luxury commercial photography",
+  "angle": "L'angle marketing choisi",
   "scenes": [
-    { "nom": "ATTENTION", "narration": "25-40 mots. Hook scroll-stopper impossible à ignorer." },
-    { "nom": "INTÉRÊT-Découverte", "narration": "25-40 mots. Révélation sensorielle du produit." },
-    { "nom": "INTÉRÊT-Solution", "narration": "25-40 mots. Problème/solution, avant/après." },
-    { "nom": "DÉSIR", "narration": "25-40 mots. Statut, fierté, preuve sociale, le rêve." },
-    { "nom": "ACTION", "narration": "25-40 mots. FOMO + moyen concret de commander." }
+    {
+      "nom": "ATTENTION",
+      "video_motion": "EN ANGLAIS, 50+ mots. Décris la scène visuelle : le/la présentateur(trice) + le produit EXACT + l'interaction + la cinématique.",
+      "narration": "EN FRANÇAIS, 10-18 mots. Voix off percutante pour cette scène."
+    },
+    {
+      "nom": "DÉSIR",
+      "video_motion": "EN ANGLAIS, 50+ mots. Le/la présentateur(trice) UTILISE le produit. Transformation visible.",
+      "narration": "EN FRANÇAIS, 15-25 mots. Voix off qui crée le désir."
+    },
+    {
+      "nom": "ACTION",
+      "video_motion": "EN ANGLAIS, 50+ mots. Plan final : présentateur(trice) + produit face caméra. Mémorable.",
+      "narration": "EN FRANÇAIS, 10-18 mots. Voix off CTA + FOMO."
+    }
   ]
 }`
         },
-        { role: 'user', content: `Crée un spot pub MÉTHODE AIDA en 5 SCÈNES pour : ${analyse.produit}\n\nStructure AIDA obligatoire :\n1. ATTENTION — hook scroll-stopper\n2. INTÉRÊT — découverte sensorielle du produit\n3. INTÉRÊT — problème/solution\n4. DÉSIR — preuve sociale + lifestyle\n5. ACTION — FOMO + comment commander\n\nTu es LIBRE — aucune contrainte de durée. 25-40 mots par scène.\nRÉFLÉCHIS d'abord : quel ANGLE et quelle ÉMOTION vont TUER pour ce produit au Burkina ? Puis écris chaque scène comme si ta carrière en dépendait.` }
+        { role: 'user', content: `Crée une PUB VIDÉO PROFESSIONNELLE AIDA en 3 SCÈNES (24 secondes) pour : ${analyse.produit}\n\nLe/la présentateur(trice) (${genre}) doit TENIR, MONTRER et UTILISER le produit — comme une VRAIE pub Dior/Nike/Apple.\nChaque scène = prompt vidéo Sora (anglais, 50+ mots) + narration voix off (français).\nDécris le produit PRÉCISÉMENT dans chaque prompt Sora : ${analyse.produit}` }
       ],
       temperature: 0.9,
       max_tokens: 2000,
@@ -216,17 +277,21 @@ Réponds UNIQUEMENT en JSON :
   console.log('  Hook:', script.hook);
   console.log('  Angle:', script.angle || 'N/A');
   console.log(`  Scènes: ${script.scenes?.length || 0}`);
-  script.scenes?.forEach((s, i) => console.log(`    ${i + 1}. ${s.nom}: ${s.narration?.substring(0, 80)}...`));
+  script.scenes?.forEach((s, i) => {
+    console.log(`    ${i + 1}. ${s.nom}:`);
+    console.log(`       Vidéo: ${s.video_motion?.substring(0, 80)}...`);
+    console.log(`       Voix: ${s.narration?.substring(0, 60)}...`);
+  });
   return script;
 }
 
 // ═══════════════════════════════════════════════════════════
 // AGENT 3 : CRÉATEUR D'IMAGES (DALL-E / gpt-image-1)
-// Image produit pour arrière-plan HeyGen
+// Image produit (utilisée seulement si pas d'image client)
 // ═══════════════════════════════════════════════════════════
 
 async function createurImages(prompt) {
-  console.log('[3/4] CRÉATEUR D\'IMAGES — DALL-E HD...');
+  console.log('[3/6] CRÉATEUR D\'IMAGES — DALL-E HD...');
 
   const cleanPrompt = prompt
     .replace(/\b[A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)*\b/g, (match) => {
@@ -235,9 +300,8 @@ async function createurImages(prompt) {
     });
 
   const enhancedPrompt = cleanPrompt +
-    '. Shot with professional cinema camera, shallow depth of field, product perfectly centered in frame, ' +
-    'luxury commercial photography lighting with warm key light and cool fill, ' +
-    'the image must look like a frame from a high-end TV commercial, ' +
+    '. Professional product photography, luxury commercial style, warm golden lighting, ' +
+    'shallow depth of field, clean dark background, vertical composition 9:16, ' +
     'absolutely no text, no words, no letters, no watermarks, no brand names, no logos anywhere in the image.';
 
   async function tryGenerate(p) {
@@ -270,159 +334,252 @@ async function createurImages(prompt) {
       setTimeout(() => { delete imageStore[id]; }, 600000);
       return imgUrl;
     }
-    console.error('  Pas d\'image dans la réponse:', JSON.stringify(data).substring(0, 200));
     return null;
   }
 
   let url = await tryGenerate(enhancedPrompt);
   if (!url) {
     console.log('  DALL-E retry avec prompt générique...');
-    const fallback = 'Elegant luxury product displayed on dark marble surface, professional studio photography, warm golden lighting, shallow depth of field, premium commercial aesthetic, no text no words no letters no logos no watermarks, vertical composition 9:16, hyper realistic, 8K';
-    url = await tryGenerate(fallback);
+    url = await tryGenerate('Elegant luxury product on dark marble, studio photography, golden lighting, no text no logos, vertical 9:16, 8K');
   }
 
   console.log('  Image:', url ? 'OK' : 'ECHEC');
-  if (!url) throw new Error('DALL-E: impossible de générer l\'image');
   return url;
 }
 
 // ═══════════════════════════════════════════════════════════
-// AGENT 4 : HEYGEN IA
-// Avatar ultra-réaliste + Voix + Scènes + Montage = TOUT EN 1
-// Remplace : Sora + OpenAI TTS + FFmpeg
+// AGENT 4 : VIDÉASTE IA (OpenAI Sora)
+// Génère des vidéos avec PERSONNE + PRODUIT
 // ═══════════════════════════════════════════════════════════
 
-let heygenConfig = null;
-
-async function initHeyGen() {
-  if (heygenConfig) return heygenConfig;
-
-  console.log('[HEYGEN] Chargement avatars et voix...');
-
-  if (process.env.HEYGEN_AVATAR_ID && process.env.HEYGEN_VOICE_ID) {
-    heygenConfig = {
-      avatar_id: process.env.HEYGEN_AVATAR_ID,
-      voice_id: process.env.HEYGEN_VOICE_ID
-    };
-    console.log(`  Avatar (env): ${heygenConfig.avatar_id}`);
-    console.log(`  Voix (env): ${heygenConfig.voice_id}`);
-    return heygenConfig;
-  }
-
-  const avRes = await fetch('https://api.heygen.com/v2/avatars', {
-    headers: { 'X-Api-Key': HEYGEN_API_KEY }
-  });
-  const avData = await avRes.json();
-  const avatars = avData.data?.avatars || [];
-
-  const voRes = await fetch('https://api.heygen.com/v2/voices', {
-    headers: { 'X-Api-Key': HEYGEN_API_KEY }
-  });
-  const voData = await voRes.json();
-  const voices = voData.data?.voices || [];
-
-  const avatar = avatars[0];
-  if (!avatar) throw new Error('HeyGen: aucun avatar disponible');
-
-  const frVoice = voices.find(v => {
-    const lang = (v.language || '').toLowerCase();
-    return lang.includes('french') || lang.includes('français') || lang.includes('fr-fr') || lang.includes('fr_fr');
-  });
-
-  heygenConfig = {
-    avatar_id: avatar.avatar_id,
-    voice_id: frVoice?.voice_id || voices[0]?.voice_id
-  };
-
-  console.log(`  Avatars dispo: ${avatars.length}`);
-  console.log(`  Voix dispo: ${voices.length}`);
-  console.log(`  Avatar: ${heygenConfig.avatar_id} (${avatar.avatar_name || ''})`);
-  console.log(`  Voix: ${heygenConfig.voice_id} (${frVoice?.name || 'default'})`);
-
-  return heygenConfig;
-}
-
-async function heygenIA(scenes, backgroundUrl) {
-  console.log(`[4/4] HEYGEN IA — ${scenes.length} scènes + avatar + voix...`);
-
-  const config = await initHeyGen();
-
-  const videoInputs = scenes.map(scene => {
-    const input = {
-      character: {
-        type: 'avatar',
-        avatar_id: config.avatar_id,
-        avatar_style: 'normal'
-      },
-      voice: {
-        type: 'text',
-        input_text: scene.narration,
-        voice_id: config.voice_id
-      }
-    };
-
-    if (backgroundUrl) {
-      input.background = { type: 'image', url: backgroundUrl };
-    } else {
-      input.background = { type: 'color', value: '#0a0a0a' };
-    }
-
-    return input;
-  });
-
-  console.log('  Envoi à HeyGen...');
-  const res = await fetch('https://api.heygen.com/v2/video/generate', {
+async function reformulerPrompt(prompt) {
+  console.log('  [REFORMULATION] Réécriture du prompt pour passer la modération...');
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
-      'X-Api-Key': HEYGEN_API_KEY,
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      video_inputs: videoInputs,
-      dimension: { width: 1080, height: 1920 }
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `Rewrite this AI video generation prompt to pass content moderation while keeping it EQUALLY captivating and professional.
+
+Rules:
+- Keep the SAME visual scene, product, and presenter
+- Keep it cinematic, luxurious, scroll-stopping
+- Replace any body contact (spraying on skin, applying on body) with elegant product presentation (spraying mist into golden light, presenting the texture)
+- Replace sensual/intimate language with confident/powerful language
+- Keep all product details EXACTLY the same
+- Keep the same energy and impact
+- Output ONLY the rewritten prompt, nothing else`
+        },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 500
+    })
+  });
+  const data = await res.json();
+  if (!res.ok) return prompt;
+  const newPrompt = data.choices[0].message.content;
+  console.log('  Reformulé:', newPrompt.substring(0, 120) + '...');
+  return newPrompt;
+}
+
+async function soraGenerate(prompt, label) {
+  const createRes = await fetch('https://api.openai.com/v1/videos', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'sora-2',
+      prompt: prompt,
+      size: '720x1280',
+      seconds: '8'
     })
   });
 
-  const data = await res.json();
-  if (data.error) {
-    console.error('  HeyGen error:', JSON.stringify(data).substring(0, 300));
-    throw new Error(`HeyGen: ${data.error.message || data.error.code || 'erreur'}`);
+  const createData = await createRes.json();
+
+  if (!createRes.ok) {
+    const errMsg = createData.error?.message || `erreur ${createRes.status}`;
+    if (errMsg.toLowerCase().includes('moderation') || errMsg.toLowerCase().includes('blocked') || errMsg.toLowerCase().includes('safety')) {
+      return { blocked: true, error: errMsg };
+    }
+    throw new Error(`Sora: ${errMsg}`);
   }
 
-  const videoId = data.data?.video_id;
-  if (!videoId) throw new Error('HeyGen: pas de video_id');
-
-  console.log(`  Video ID: ${videoId}`);
-  console.log('  Génération (~2-5 min)...');
+  const videoId = createData.id;
+  console.log(`  Job: ${videoId} — Génération (~2-5 min)...`);
 
   for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 10000));
 
-    const pollRes = await fetch(`https://api.heygen.com/v1/video_status.get?video_id=${videoId}`, {
-      headers: { 'X-Api-Key': HEYGEN_API_KEY }
+    const pollRes = await fetch(`https://api.openai.com/v1/videos/${videoId}`, {
+      headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}` }
     });
     const pollData = await pollRes.json();
-    const status = pollData.data?.status;
 
-    if (status === 'completed') {
-      const videoUrl = pollData.data?.video_url;
-      console.log('  VIDÉO HEYGEN PRÊTE!');
-      console.log(`  URL: ${videoUrl}`);
-      console.log(`  Durée: ${pollData.data?.duration?.toFixed(1)}s`);
-      return videoUrl;
+    if (pollData.status === 'completed') {
+      console.log(`  ${label} PRÊTE!`);
+      const dlRes = await fetch(`https://api.openai.com/v1/videos/${videoId}/content`, {
+        headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}` }
+      });
+      if (!dlRes.ok) throw new Error('Sora: téléchargement échoué');
+      const videoBuffer = Buffer.from(await dlRes.arrayBuffer());
+      console.log(`  ${(videoBuffer.length / 1024 / 1024).toFixed(1)} MB`);
+      return { blocked: false, buffer: videoBuffer };
     }
 
-    if (status === 'failed') {
-      console.error('  HeyGen FAILED:', JSON.stringify(pollData.data).substring(0, 200));
-      throw new Error(`HeyGen: ${pollData.data?.error || 'génération échouée'}`);
+    if (pollData.status === 'failed') {
+      const failMsg = pollData.error?.message || 'échoué';
+      if (failMsg.toLowerCase().includes('moderation') || failMsg.toLowerCase().includes('blocked') || failMsg.toLowerCase().includes('safety')) {
+        return { blocked: true, error: failMsg };
+      }
+      throw new Error(`Sora ${label}: ${failMsg}`);
     }
 
     if (i % 6 === 0 && i > 0) {
-      console.log(`  ... ${Math.round(i * 10 / 60)} min (${status})`);
+      console.log(`  ... ${Math.round(i * 10 / 60)} min (${pollData.status})`);
     }
   }
 
-  throw new Error('HeyGen: timeout 10min');
+  throw new Error(`Sora ${label}: timeout 10min`);
+}
+
+async function videasteIA(motionPrompt, sceneNum) {
+  const label = sceneNum ? `Scène ${sceneNum}` : 'Vidéo';
+  console.log(`[SORA] ${label} — génération...`);
+  console.log(`  Prompt: ${motionPrompt.substring(0, 150)}...`);
+
+  let result = await soraGenerate(motionPrompt, label);
+
+  if (result.blocked) {
+    console.log(`  ${label} BLOQUÉE par modération — reformulation auto...`);
+    const newPrompt = await reformulerPrompt(motionPrompt);
+    result = await soraGenerate(newPrompt, `${label} (retry)`);
+
+    if (result.blocked) {
+      throw new Error(`Sora ${label}: bloqué même après reformulation`);
+    }
+  }
+
+  return result.buffer;
+}
+
+// ═══════════════════════════════════════════════════════════
+// AGENT 5 : VOIX IA (OpenAI TTS)
+// Voix off française — voix féminine ou masculine selon présentateur
+// ═══════════════════════════════════════════════════════════
+
+async function voixIA(texte, genre) {
+  const voice = genre === 'homme' ? 'onyx' : 'nova';
+  console.log(`[5/6] VOIX IA — OpenAI TTS (${voice})...`);
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'tts-1-hd',
+        input: texte,
+        voice: voice,
+        response_format: 'mp3',
+        speed: 1.0
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.error('  TTS error:', err.error?.message || res.status);
+      return null;
+    }
+
+    const audioBuffer = Buffer.from(await res.arrayBuffer());
+    console.log(`  Voix OK (${(audioBuffer.length / 1024).toFixed(0)} KB)`);
+    return audioBuffer;
+  } catch (err) {
+    console.error('  TTS error:', err.message);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// AGENT 6 : MONTEUR IA (FFmpeg)
+// Assemble les scènes + ajoute la voix off
+// ═══════════════════════════════════════════════════════════
+
+async function monteurIA(videoBuffers, audioBuffer) {
+  console.log(`[6/6] MONTEUR IA — FFmpeg (${videoBuffers.length} scènes + voix off)...`);
+
+  const tmpDir = os.tmpdir();
+  const ts = Date.now();
+  const scenePaths = [];
+  const concatOut = path.join(tmpDir, `concat_${ts}.mp4`);
+  const output = path.join(tmpDir, `final_${ts}.mp4`);
+  const audioIn = audioBuffer ? path.join(tmpDir, `aud_${ts}.mp3`) : null;
+
+  try {
+    for (let i = 0; i < videoBuffers.length; i++) {
+      const p = path.join(tmpDir, `scene_${ts}_${i}.mp4`);
+      fs.writeFileSync(p, videoBuffers[i]);
+      scenePaths.push(p);
+      console.log(`  Scène ${i + 1}: ${(videoBuffers[i].length / 1024 / 1024).toFixed(1)} MB`);
+    }
+
+    const inputs = scenePaths.map(p => `-i "${p}"`).join(' ');
+    const filterParts = scenePaths.map((_, i) => `[${i}:v:0]`).join('');
+    const concatFilter = `${filterParts}concat=n=${scenePaths.length}:v=1:a=0[outv]`;
+
+    const concatCmd = `ffmpeg -y ${inputs} -filter_complex "${concatFilter}" -map "[outv]" -c:v libx264 -preset fast -crf 23 "${concatOut}"`;
+    console.log('  Concat CMD:', concatCmd.substring(0, 250));
+    try {
+      execSync(concatCmd, { timeout: 120000, stdio: 'pipe' });
+      console.log('  Scènes assemblées (filter_complex)');
+    } catch (e1) {
+      console.error('  filter_complex échoué:', e1.stderr?.toString()?.substring(0, 300));
+      console.log('  Retry avec concat demuxer...');
+      let listContent = '';
+      scenePaths.forEach(p => { listContent += `file '${p}'\n`; });
+      const concatFile = path.join(tmpDir, `list_${ts}.txt`);
+      fs.writeFileSync(concatFile, listContent);
+      execSync(`ffmpeg -y -f concat -safe 0 -i "${concatFile}" -c copy "${concatOut}"`, { timeout: 60000, stdio: 'pipe' });
+      console.log('  Scènes assemblées (concat demuxer)');
+    }
+
+    if (audioBuffer) {
+      fs.writeFileSync(audioIn, audioBuffer);
+      execSync(
+        `ffmpeg -y -i "${concatOut}" -i "${audioIn}" -c:v copy -c:a aac -b:a 128k -map 0:v:0 -map 1:a:0 -shortest "${output}"`,
+        { timeout: 60000, stdio: 'pipe' }
+      );
+      console.log('  Voix off ajoutée');
+    } else {
+      fs.copyFileSync(concatOut, output);
+    }
+
+    const finalBuffer = fs.readFileSync(output);
+    console.log(`  Montage FINAL: ${(finalBuffer.length / 1024 / 1024).toFixed(1)} MB`);
+    return finalBuffer;
+  } catch (err) {
+    console.error('  FFmpeg ERREUR FINALE:', err.message?.substring(0, 300));
+    if (err.stderr) console.error('  stderr:', err.stderr.toString().substring(0, 300));
+    console.log('  Fallback: première scène seule (sans voix)');
+    return videoBuffers[0];
+  } finally {
+    scenePaths.forEach(p => { try { fs.unlinkSync(p); } catch {} });
+    try { fs.unlinkSync(path.join(tmpDir, `list_${ts}.txt`)); } catch {}
+    try { fs.unlinkSync(concatOut); } catch {}
+    try { fs.unlinkSync(output); } catch {}
+    if (audioIn) try { fs.unlinkSync(audioIn); } catch {}
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -430,6 +587,7 @@ async function heygenIA(scenes, backgroundUrl) {
 // ═══════════════════════════════════════════════════════════
 
 let imageStore = {};
+let videoStore = {};
 
 async function handleMessage(chatId, userText, clientImage) {
   try {
@@ -441,37 +599,83 @@ async function handleMessage(chatId, userText, clientImage) {
     console.log('='.repeat(55));
 
     await sendText(chatId,
-      '🎬 *STUDIO PUB IA v11*\n\n' +
-      '🧠 Directeur IA analyse votre produit...\n' +
-      '✍️ Scénariste IA crée le script 5 scènes...\n' +
-      '🎨 Créateur génère l\'image produit...\n' +
-      '🎥 HeyGen crée la vidéo avec avatar ultra-réaliste...\n\n' +
-      '⏳ ~5-8 minutes, votre spot arrive...');
+      '🎬 *STUDIO PUB IA v12*\n\n' +
+      (clientImage ? '👁️ Vision IA analyse votre produit...\n' : '') +
+      '🧠 Directeur IA — stratégie marketing...\n' +
+      '✍️ Scénariste IA — 3 scènes AIDA...\n' +
+      '🎥 Sora — 3 vidéos pro en parallèle...\n' +
+      '🎙️ Voix IA — narration française...\n' +
+      '🎬 Monteur IA — assemblage final...\n\n' +
+      '⏳ ~5-8 min, votre spot 24s arrive...');
 
-    // AGENT 1 : DIRECTEUR
-    const analyse = await directeurIA(userText, !!clientImage);
-
-    // AGENT 2 : SCÉNARISTE
-    const script = await scenaristeIA(analyse, !!clientImage);
-
-    // AGENT 3 : CRÉATEUR D'IMAGES (si pas d'image client)
-    let imageUrl = clientImage;
-    if (!clientImage && script.image_prompt) {
-      imageUrl = await createurImages(script.image_prompt);
-    } else {
-      console.log('[3/4] IMAGE fournie par le client');
+    // AGENT VISION : Si image client → description ultra-précise du produit
+    let productVision = null;
+    if (clientImage) {
+      productVision = await visionIA(clientImage);
     }
 
-    // AGENT 4 : HEYGEN (avatar + voix + scènes = vidéo complète)
+    // AGENT 1 : DIRECTEUR (enrichi avec la description Vision si disponible)
+    let directeurInput = userText;
+    if (productVision) {
+      directeurInput = `${userText}\n\n=== DESCRIPTION VISUELLE EXACTE DU PRODUIT (d'après la photo envoyée) ===\n${productVision}`;
+    }
+    const analyse = await directeurIA(directeurInput, !!clientImage);
+
+    // AGENT 2 : SCÉNARISTE
+    const script = await scenaristeIA(analyse);
+
+    // ENRICHIR chaque prompt Sora avec la description EXACTE du produit
     const scenes = script.scenes || [];
     if (scenes.length === 0) throw new Error('Aucune scène générée');
 
-    const videoUrl = await heygenIA(scenes, imageUrl);
+    const produitDesc = productVision || analyse.produit;
+    scenes.forEach((s, i) => {
+      s.video_motion = s.video_motion +
+        `. CRITICAL — The product in every frame must match this EXACT description: ${produitDesc}. ` +
+        'Reproduce this specific product faithfully in shape, color, size, and materials. ' +
+        'The presenter holds THIS exact product. Professional luxury TV commercial, shallow DOF, warm cinematic lighting, no text no watermarks.';
+      console.log(`  Scène ${i + 1} prompt enrichi (${s.video_motion.length} chars)`);
+    });
+
+    console.log(`[4/6] VIDÉASTE IA — ${scenes.length} scènes Sora en parallèle...`);
+
+    const results = await Promise.allSettled(
+      scenes.map((scene, i) =>
+        videasteIA(scene.video_motion, i + 1)
+      )
+    );
+
+    const videoBuffers = [];
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        videoBuffers.push(r.value);
+        console.log(`  Scène ${i + 1}: OK`);
+      } else {
+        console.error(`  Scène ${i + 1}: ÉCHOUÉE — ${r.reason?.message}`);
+      }
+    });
+
+    if (videoBuffers.length === 0) throw new Error('Aucune scène vidéo générée');
+    console.log(`  ${videoBuffers.length}/${scenes.length} scènes réussies`);
+
+    // AGENT 5 : VOIX OFF (TTS — voix adaptée au genre du présentateur)
+    const narrationFull = scenes.map(s => s.narration).join(' ');
+    const genre = analyse.presenter_genre || 'femme';
+    const audioBuffer = await voixIA(narrationFull, genre);
+
+    // AGENT 6 : MONTEUR (FFmpeg — concat scènes + voix off)
+    const finalBuffer = await monteurIA(videoBuffers, audioBuffer);
+
+    // Stocker et servir
+    const vid = Date.now().toString(36);
+    videoStore[vid] = finalBuffer;
+    const domain = process.env.RAILWAY_PUBLIC_DOMAIN || 'vid-o-agent-production.up.railway.app';
+    const videoUrl = `https://${domain}/vid/${vid}`;
+    console.log(`  Video servie: ${videoUrl} (${(finalBuffer.length / 1024 / 1024).toFixed(1)} MB)`);
+    setTimeout(() => { delete videoStore[vid]; }, 600000);
 
     // LIVRAISON
     console.log('\n[LIVRAISON] Envoi WhatsApp...');
-
-    const narrationFull = scenes.map(s => s.narration).join(' ');
 
     const caption =
       `🔥 ${script.hook}\n\n` +
@@ -493,7 +697,7 @@ async function handleMessage(chatId, userText, clientImage) {
   }
 }
 
-// Route pour servir les images générées (arrière-plan HeyGen)
+// Routes
 app.get('/img/:id', (req, res) => {
   const img = imageStore[req.params.id];
   if (!img) return res.status(404).send('Image expirée');
@@ -502,17 +706,46 @@ app.get('/img/:id', (req, res) => {
   res.send(buffer);
 });
 
+app.get('/vid/:id', (req, res) => {
+  const vid = videoStore[req.params.id];
+  if (!vid) return res.status(404).send('Video expirée');
+  res.set({ 'Content-Type': 'video/mp4', 'Content-Length': vid.length });
+  res.send(vid);
+});
+
 // ========== POLLING ==========
 
 let isProcessing = false;
+let consecutiveErrors = 0;
 
 async function poll() {
   try {
     const res = await fetch(`${GREEN_API_URL}/receiveNotification/${GREEN_API_TOKEN}?receiveTimeout=5`);
-    const text = await res.text();
-    if (!text || text === 'null') return;
 
-    const data = JSON.parse(text);
+    if (!res.ok) {
+      consecutiveErrors++;
+      if (consecutiveErrors === 1 || consecutiveErrors % 30 === 0) {
+        console.error(`Poll: Green API HTTP ${res.status} (erreur #${consecutiveErrors} — vérifie le token et redémarre l'instance sur console.green-api.com)`);
+      }
+      return;
+    }
+
+    const text = await res.text();
+    if (!text || text === 'null') {
+      consecutiveErrors = 0;
+      return;
+    }
+
+    let data;
+    try { data = JSON.parse(text); } catch {
+      consecutiveErrors++;
+      if (consecutiveErrors === 1 || consecutiveErrors % 30 === 0) {
+        console.error(`Poll: réponse non-JSON de Green API (erreur #${consecutiveErrors})`);
+      }
+      return;
+    }
+
+    consecutiveErrors = 0;
     if (!data?.receiptId) return;
 
     const body = data.body;
@@ -548,7 +781,10 @@ async function poll() {
 
     await fetch(`${GREEN_API_URL}/deleteNotification/${GREEN_API_TOKEN}/${data.receiptId}`, { method: 'DELETE' });
   } catch (err) {
-    if (!err.message?.includes('null')) console.error('Poll:', err.message);
+    consecutiveErrors++;
+    if (consecutiveErrors === 1 || consecutiveErrors % 30 === 0) {
+      console.error(`Poll: ${err.message} (erreur #${consecutiveErrors})`);
+    }
   }
 }
 
@@ -570,25 +806,30 @@ async function clearQueue() {
 // ========== DÉMARRAGE ==========
 
 app.get('/', (req, res) => res.json({
-  version: 'Studio Pub IA v11.0 — HeyGen',
+  version: 'Studio Pub IA v12.0 — Sora + TTS + FFmpeg',
   pipeline: {
     directeur: 'OpenAI GPT-4o-mini',
-    scenariste: 'OpenAI GPT-4o-mini',
-    images: 'gpt-image-1 (DALL-E)',
-    video: 'HeyGen (avatar + voix + montage)'
+    scenariste: 'OpenAI GPT-4o-mini (AIDA 3 scènes)',
+    images: 'gpt-image-1',
+    video: 'OpenAI Sora (personne + produit)',
+    voix: 'OpenAI TTS HD (voix adaptée au genre)',
+    montage: 'FFmpeg (vidéo + voix off)'
   }
 }));
 
 app.listen(PORT, async () => {
   console.log('');
-  console.log('  ╔══════════════════════════════════════╗');
-  console.log('  ║     STUDIO PUB IA v11.0 — HeyGen    ║');
-  console.log('  ╠══════════════════════════════════════╣');
-  console.log('  ║  1. Directeur IA    → OpenAI GPT     ║');
-  console.log('  ║  2. Scénariste IA   → OpenAI GPT     ║');
-  console.log('  ║  3. Créateur Images → gpt-image-1    ║');
-  console.log('  ║  4. HeyGen IA       → Avatar+Voix    ║');
-  console.log('  ╚══════════════════════════════════════╝');
+  console.log('  ╔══════════════════════════════════════════╗');
+  console.log('  ║     STUDIO PUB IA v12.0                  ║');
+  console.log('  ║     Sora + TTS + FFmpeg                  ║');
+  console.log('  ╠══════════════════════════════════════════╣');
+  console.log('  ║  1. Directeur IA    → OpenAI GPT         ║');
+  console.log('  ║  2. Scénariste IA   → AIDA 3 scènes      ║');
+  console.log('  ║  3. Créateur Images → gpt-image-1        ║');
+  console.log('  ║  4. Vidéaste IA     → Sora (personne+prod)║');
+  console.log('  ║  5. Voix IA         → TTS HD (♀ nova/♂ onyx)║');
+  console.log('  ║  6. Monteur IA      → FFmpeg              ║');
+  console.log('  ╚══════════════════════════════════════════╝');
   console.log('');
 
   await clearQueue();
